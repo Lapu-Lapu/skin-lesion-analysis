@@ -13,6 +13,8 @@ Unzip to directory `skin-lesions/`
 
 Training images are drawn uniformly from the three classes (Melanom, Nevus and
 Seborrheic Keratosis), cropped to squares and rescaled to 224 by 224 RGB pixels.
+Images are read and transformed during training, use multiple threads to make
+training faster.
 
 ## Model
 
