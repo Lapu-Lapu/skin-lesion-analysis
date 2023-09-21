@@ -72,7 +72,7 @@ function inspect(model, fns)
 end
 
 function correct(fn)
-    out = fn |> load_image |> x->(x.-mean_rgb)./std_rgb |> gpu |> customres |> softmax
+    out = fn |> load_image |> x->(x.-mean_rgb)./std_rgb |> gpu |> model |> softmax
     labels[argmax(out)] == get_label(fn)
 end
 
@@ -102,9 +102,9 @@ std_rgb = reshape(std(x_probe, dims=(1,2,4)), 1, 1, :)
 mean_rgb = reshape(mean(x_probe, dims=(1,2,4)), 1, 1, :)
 
 # Set up model
-model = ResNet(101; pretrain=true)
+resnet = ResNet(101; pretrain=true)
 customres = Chain(
-    backbone(model), 
+    backbone(resnet), 
     AdaptiveMeanPool((1,1)), 
     Flux.flatten, 
     Dense(2048 => 3, relu),
@@ -114,8 +114,16 @@ customres = Chain(
 ) |> dev
 # ps = Flux.params(customres[2:end])
 
+transformer_base = ViT(:base, pretrain=true)
+transformer = Chain(
+    backbone(transformer_base),
+    LayerNorm(768),
+    Dense(768 => 3)
+) |> dev
+model = transformer
+
 # Set up optimizer and loss function
-opt = Flux.setup(Adam(0.0001), customres)
+opt = Flux.setup(Adam(0.0001), model)
 loss(model, x, y) = Flux.logitcrossentropy(model(x), y)
 
 # Use custom datastructure to load images from harddrive when
@@ -136,7 +144,7 @@ function getobs(ds::ImageDataSource, i::Int)
     (x |> dev, y |> dev)
 end
 
-batch_size = 24
+batch_size = 16
 loader = DataLoader(ImageDataSource(fns_train_balanced), batch_size)
 
 # Use batch for validation error
@@ -147,7 +155,7 @@ test_loader = DataLoader(ImageDataSource(fns_test), batch_size)
 function train(epochs)
     for epoch in 1:epochs
         iter = ProgressBar(loader)
-        @show Flux.logitcrossentropy(customres(x_test), y_test)
+        @show Flux.logitcrossentropy(model(x_test), y_test)
         for (x, y) in iter
             # println("Loaded a batch with $(size(x)) dims.")
             # @show y
@@ -155,20 +163,20 @@ function train(epochs)
             # @show yhat
             # train!(loss, customres, [(x, y)], opt)
 
-            grads = Flux.gradient(customres) do m
+            grads = Flux.gradient(model) do m
                 yhat = m(x)
                 Flux.logitcrossentropy(yhat, y)
             end
 
             # Update the parameters so as to reduce the objective,
             # according the chosen optimisation rule:
-            Flux.update!(opt, customres, grads[1])
+            Flux.update!(opt, model, grads[1])
 
-            yhat = customres(x)
+            yhat = model(x)
             lv =  Flux.logitcrossentropy(yhat, y)
             set_description(iter, "Loss " * string(lv))
         end
     end
-    @show Flux.logitcrossentropy(customres(x_test), y_test)
+    @show Flux.logitcrossentropy(model(x_test), y_test)
 end
-train(5)
+train(20)
