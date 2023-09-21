@@ -65,6 +65,23 @@ function inspect()
     arr
 end
 
+function inspect(model, fns)
+    @show fn = sample(fns)
+    out = fn |> load_image |> x->(x.-mean_rgb)./std_rgb |> gpu |> model |> softmax
+    Dict(zip(labels, out))
+end
+
+function correct(fn)
+    out = fn |> load_image |> x->(x.-mean_rgb)./std_rgb |> gpu |> customres |> softmax
+    labels[argmax(out)] == get_label(fn)
+end
+
+
+function accuracy(fns)
+    mean(correct.(fns))
+end
+
+
 labels = ["melanoma", "nevus", "seborrheic_keratosis"]
 get_label(fn) = [match.match for match in eachmatch(r"\b(melanoma|nevus|seborrheic_keratosis)\b", fn)][1]
 
@@ -77,6 +94,7 @@ c = counter(get_label.(fns_train))
 inv_occ = Dict(l => 1 / c[l] for l in labels)
 sample_weights = FrequencyWeights([inv_occ[item] for item in get_label.(fns_train)])
 fns_train_balanced = sample(fns_train, sample_weights, length(fns_train))
+# fns_train_balanced = sample(fns_train, sample_weights, 100)
 
 # sample images for normalization
 x_probe = reshape(stack(load_image.(sample(fns_train, sample_weights, 10))), 224, 224, 3, :)
@@ -84,17 +102,20 @@ std_rgb = reshape(std(x_probe, dims=(1,2,4)), 1, 1, :)
 mean_rgb = reshape(mean(x_probe, dims=(1,2,4)), 1, 1, :)
 
 # Set up model
-model = ResNet(50; pretrain=true)
+model = ResNet(101; pretrain=true)
 customres = Chain(
     backbone(model), 
     AdaptiveMeanPool((1,1)), 
     Flux.flatten, 
-    Dense(2048 => 3),
+    Dense(2048 => 3, relu),
+    # Dense(2048 => 128, relu),
+    # Dense(128 => 3)
     # softmax
 ) |> dev
+# ps = Flux.params(customres[2:end])
 
 # Set up optimizer and loss function
-opt = Flux.setup(Adam(), customres)
+opt = Flux.setup(Adam(0.0001), customres)
 loss(model, x, y) = Flux.logitcrossentropy(model(x), y)
 
 # Use custom datastructure to load images from harddrive when
@@ -111,28 +132,43 @@ function getobs(ds::ImageDataSource, i::Int)
     x = load_image(ds.filenames[i])[:, :, :, 1]
     x = (x .- mean_rgb)./std_rgb
     y = Float32.(get_label(ds.filenames[i]) .== labels)
-    y = Flux.label_smoothing(y, 0.2f0)
+    y = Flux.label_smoothing(y, 0.1f0)
     (x |> dev, y |> dev)
 end
-loader = DataLoader(ImageDataSource(fns_train_balanced), 8)
+
+batch_size = 24
+loader = DataLoader(ImageDataSource(fns_train_balanced), batch_size)
 
 # Use batch for validation error
-test_loader = DataLoader(ImageDataSource(fns_test), 8)
+test_loader = DataLoader(ImageDataSource(fns_test), batch_size)
 ((x_test, y_test), state) = iterate(test_loader)
 
 # training loop
-for epoch in 1:50
-    iter = ProgressBar(loader)
-    @show Flux.logitcrossentropy(customres(x_test), y_test)
-    for (x, y) in iter
-        # println("Loaded a batch with $(size(x)) dims.")
-        # @show y
-        # yhat = customres(x) |> dev
-        # @show yhat
-        train!(loss, customres, [(x, y)], opt)
-        yhat = customres(x)
-        lv =  Flux.logitcrossentropy(yhat, y)
-        set_description(iter, "Loss " * string(lv))
+function train(epochs)
+    for epoch in 1:epochs
+        iter = ProgressBar(loader)
+        @show Flux.logitcrossentropy(customres(x_test), y_test)
+        for (x, y) in iter
+            # println("Loaded a batch with $(size(x)) dims.")
+            # @show y
+            # yhat = customres(x) |> dev
+            # @show yhat
+            # train!(loss, customres, [(x, y)], opt)
+
+            grads = Flux.gradient(customres) do m
+                yhat = m(x)
+                Flux.logitcrossentropy(yhat, y)
+            end
+
+            # Update the parameters so as to reduce the objective,
+            # according the chosen optimisation rule:
+            Flux.update!(opt, customres, grads[1])
+
+            yhat = customres(x)
+            lv =  Flux.logitcrossentropy(yhat, y)
+            set_description(iter, "Loss " * string(lv))
+        end
     end
+    @show Flux.logitcrossentropy(customres(x_test), y_test)
 end
-@show Flux.logitcrossentropy(customres(x_test), y_test)
+train(5)
