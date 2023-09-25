@@ -21,6 +21,8 @@ using CUDA
 @show CUDA.has_cuda_gpu()
 
 dev = gpu
+in_width = 336
+in_height = 336
 
 function to_whcn(x)
 	permute = x->permutedims(x,[3,2,1])
@@ -47,7 +49,7 @@ end
 function load_image(fn)
     img = load(fn)
     img = rescale(img)
-    img = imresize(img, 224, 224)
+    img = imresize(img, in_width, in_height)
     arr = process(img)
     arr
 end
@@ -57,7 +59,7 @@ function inspect()
     @show fn
     img = load(fn)
     img = rescale(img)
-    img = imresize(img, 224, 224)
+    img = imresize(img, in_width, in_height)
     arr = process(img)
     @show size(arr)
     # ImageInTerminal.imshow(img)
@@ -97,7 +99,7 @@ fns_train_balanced = sample(fns_train, sample_weights, length(fns_train))
 # fns_train_balanced = sample(fns_train, sample_weights, 100)
 
 # sample images for normalization
-x_probe = reshape(stack(load_image.(sample(fns_train, sample_weights, 10))), 224, 224, 3, :)
+x_probe = reshape(stack(load_image.(sample(fns_train, sample_weights, 10))), in_width, in_height, 3, :)
 std_rgb = reshape(std(x_probe, dims=(1,2,4)), 1, 1, :)
 mean_rgb = reshape(mean(x_probe, dims=(1,2,4)), 1, 1, :)
 
@@ -114,7 +116,7 @@ customres = Chain(
 ) |> dev
 # ps = Flux.params(customres[2:end])
 
-transformer_base = ViT(:base, pretrain=true)
+transformer_base = ViT(:base, pretrain=false, imsize=(in_width, in_height))
 transformer = Chain(
     backbone(transformer_base),
     LayerNorm(768),
@@ -144,7 +146,7 @@ function getobs(ds::ImageDataSource, i::Int)
     (x |> dev, y |> dev)
 end
 
-batch_size = 16
+batch_size = 4
 loader = DataLoader(ImageDataSource(fns_train_balanced), batch_size)
 
 # Use batch for validation error
@@ -179,4 +181,8 @@ function train(epochs)
     end
     @show Flux.logitcrossentropy(model(x_test), y_test)
 end
-train(20)
+train(60)
+
+# using BSON
+# BSON.@save "mymodel.bson" model
+# BSON.@load "mymodel.bson" model
