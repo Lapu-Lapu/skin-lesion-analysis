@@ -13,6 +13,8 @@ using Random
 using Flux: train!
 using ProgressBars
 using DataStructures
+using JLD2
+using Dates
 # using CairoMakie
 # using CairoMakie: Axis
 # using ColorSchemes
@@ -122,7 +124,7 @@ transformer = Chain(
     LayerNorm(768),
     Dense(768 => 3)
 ) |> dev
-model = transformer
+model = customres
 
 # Set up optimizer and loss function
 opt = Flux.setup(Adam(0.0001), model)
@@ -138,15 +140,19 @@ function nobs(ds::ImageDataSource)
     return length(ds.filenames)
 end
 
-function getobs(ds::ImageDataSource, i::Int)
+function getobs(ds::ImageDataSource, i::Int, gpu::Bool=true)
     x = load_image(ds.filenames[i])[:, :, :, 1]
     x = (x .- mean_rgb)./std_rgb
     y = Float32.(get_label(ds.filenames[i]) .== labels)
     y = Flux.label_smoothing(y, 0.1f0)
-    (x |> dev, y |> dev)
+    if gpu
+        return (x |> dev, y |> dev)
+    else
+        return x, y
+    end
 end
 
-batch_size = 4
+batch_size = 8
 loader = DataLoader(ImageDataSource(fns_train_balanced), batch_size)
 
 # Use batch for validation error
@@ -179,9 +185,10 @@ function train(epochs)
             set_description(iter, "Loss " * string(lv))
         end
     end
-    @show Flux.logitcrossentropy(model(x_test), y_test)
+    @show testloss = Flux.logitcrossentropy(model(x_test), y_test)
+    jldsave("model-$(now()).jld2", model_state = Flux.state(model), loss = testloss)
 end
-train(60)
+train(20)
 
 # using BSON
 # BSON.@save "mymodel.bson" model
