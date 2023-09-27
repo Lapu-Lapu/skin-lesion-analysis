@@ -15,6 +15,8 @@ using ProgressBars
 using DataStructures
 using JLD2
 using Dates
+using FileIO
+using DataAugmentation
 # using CairoMakie
 # using CairoMakie: Axis
 # using ColorSchemes
@@ -29,7 +31,8 @@ in_height = 336
 function to_whcn(x)
 	permute = x->permutedims(x,[3,2,1])
 	addbatchdim = x->reshape(x, size(x)..., 1)
-	x |> channelview |> permute |> addbatchdim
+    ignore_alpha = x -> x[:, :, 1:3]
+	x |> channelview |> permute |> ignore_alpha |> addbatchdim
 end
 
 collect32(x) = collect(Float32, x)
@@ -50,10 +53,12 @@ end
 
 function load_image(fn)
     img = load(fn)
-    img = rescale(img)
-    img = imresize(img, in_width, in_height)
-    arr = process(img)
-    arr
+    tfm = RandomResizeCrop((in_width, in_height)) |> Maybe(FlipX()) |> Maybe(FlipY())
+    img = showitems(apply(tfm, Image(img)))
+    # img = rescale(img)
+    # img = imresize(img, in_width, in_height)
+    # arr = process(img)
+    arr = img |> to_whcn |> collect32
 end
 
 function inspect()
@@ -97,8 +102,7 @@ fns_valid = shuffle(glob("skin-lesions/valid/*/*.jpg"))[1:20]
 c = counter(get_label.(fns_train))
 inv_occ = Dict(l => 1 / c[l] for l in labels)
 sample_weights = FrequencyWeights([inv_occ[item] for item in get_label.(fns_train)])
-fns_train_balanced = sample(fns_train, sample_weights, length(fns_train))
-# fns_train_balanced = sample(fns_train, sample_weights, 100)
+fns_train_balanced = sample(fns_train, sample_weights, 3*length(fns_train))
 
 # sample images for normalization
 x_probe = reshape(stack(load_image.(sample(fns_train, sample_weights, 10))), in_width, in_height, 3, :)
@@ -127,7 +131,7 @@ transformer = Chain(
 model = customres
 
 # Set up optimizer and loss function
-opt = Flux.setup(Adam(0.0001), model)
+opt = Flux.setup(Adam(0.001), model)
 loss(model, x, y) = Flux.logitcrossentropy(model(x), y)
 
 # Use custom datastructure to load images from harddrive when
@@ -144,7 +148,7 @@ function getobs(ds::ImageDataSource, i::Int, gpu::Bool=true)
     x = load_image(ds.filenames[i])[:, :, :, 1]
     x = (x .- mean_rgb)./std_rgb
     y = Float32.(get_label(ds.filenames[i]) .== labels)
-    y = Flux.label_smoothing(y, 0.1f0)
+    y = Flux.label_smoothing(y, 0.05f0)
     if gpu
         return (x |> dev, y |> dev)
     else
@@ -152,19 +156,42 @@ function getobs(ds::ImageDataSource, i::Int, gpu::Bool=true)
     end
 end
 
-batch_size = 8
-loader = DataLoader(ImageDataSource(fns_train_balanced), batch_size)
+function get_preprocessed_data(fns)
+    ds = ImageDataSource(fns)
+    X = Array{Float32}(undef, in_width, in_height, 3, nobs(ds))
+    Y = Array{Float32}(undef, 3, nobs(ds))
+    for i in 1:nobs(ds)
+        x, y = getobs(ds, i, false)
+        X[:, :, :, i] = x
+        Y[:, i] = y
+    end
+    X, Y
+end
+
+batch_size = 10
+# X, Y = get_preprocessed_data(fns_train_balanced)
+# FileIO.save("preprocessed.jld2", "X", X, "Y", Y)
+data = FileIO.load("preprocessed.jld2")
+X = data["X"]
+Y = data["Y"]
+
+# loader = DataLoader(ImageDataSource(fns_train_balanced), batch_size)
+loader = DataLoader((X, Y), batch_size)
 
 # Use batch for validation error
 test_loader = DataLoader(ImageDataSource(fns_test), batch_size)
 ((x_test, y_test), state) = iterate(test_loader)
 
+
 # training loop
 function train(epochs)
     for epoch in 1:epochs
+        @show epoch
         iter = ProgressBar(loader)
         @show Flux.logitcrossentropy(model(x_test), y_test)
         for (x, y) in iter
+            x = x |> dev
+            y = y |> dev
             # println("Loaded a batch with $(size(x)) dims.")
             # @show y
             # yhat = customres(x) |> dev
