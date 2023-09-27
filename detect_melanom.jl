@@ -87,7 +87,18 @@ end
 
 
 function accuracy(fns)
-    mean(correct.(fns))
+    # mean(correct.(fns))
+
+    # X, Y = get_preprocessed_data(fns_test)
+    # FileIO.save("preprocessed_test.jld2", "Xtest", Xtest, "Ytest", Ytest)
+
+    data = FileIO.load("preprocessed_test.jld2")
+    X = data["Xtest"]
+    Y = data["Ytest"]
+    Yhat = X |> cpu(model) |> softmax
+    Yhat_cold = map(x->x[1], argmax(Yhat, dims=1))
+    Y_cold = map(x->x[1], argmax(Y, dims=1))
+    mean(Yhat_cold .== Y_cold)
 end
 
 
