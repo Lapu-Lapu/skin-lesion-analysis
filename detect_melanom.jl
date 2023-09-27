@@ -28,6 +28,8 @@ dev = gpu
 in_width = 336
 in_height = 336
 
+save_preprocessed = true
+
 function to_whcn(x)
 	permute = x->permutedims(x,[3,2,1])
 	addbatchdim = x->reshape(x, size(x)..., 1)
@@ -55,9 +57,6 @@ function load_image(fn)
     img = load(fn)
     tfm = RandomResizeCrop((in_width, in_height)) |> Maybe(FlipX()) |> Maybe(FlipY())
     img = showitems(apply(tfm, Image(img)))
-    # img = rescale(img)
-    # img = imresize(img, in_width, in_height)
-    # arr = process(img)
     arr = img |> to_whcn |> collect32
 end
 
@@ -87,20 +86,19 @@ end
 
 
 function accuracy(fns)
-    # mean(correct.(fns))
-
-    # X, Y = get_preprocessed_data(fns_test)
-    # FileIO.save("preprocessed_test.jld2", "Xtest", Xtest, "Ytest", Ytest)
-
-    data = FileIO.load("preprocessed_test.jld2")
-    X = data["Xtest"]
-    Y = data["Ytest"]
+    if save_preprocessed
+        X, Y = get_preprocessed_data(fns_test)
+        FileIO.save("preprocessed_test.jld2", "X", X, "Y", Y)
+    else
+        data = FileIO.load("preprocessed_test.jld2")
+        X = data["X"]
+        Y = data["Y"]
+    end
     Yhat = X |> cpu(model) |> softmax
     Yhat_cold = map(x->x[1], argmax(Yhat, dims=1))
     Y_cold = map(x->x[1], argmax(Y, dims=1))
     mean(Yhat_cold .== Y_cold)
 end
-
 
 labels = ["melanoma", "nevus", "seborrheic_keratosis"]
 get_label(fn) = [match.match for match in eachmatch(r"\b(melanoma|nevus|seborrheic_keratosis)\b", fn)][1]
@@ -127,11 +125,7 @@ customres = Chain(
     AdaptiveMeanPool((1,1)), 
     Flux.flatten, 
     Dense(2048 => 3, relu),
-    # Dense(2048 => 128, relu),
-    # Dense(128 => 3)
-    # softmax
 ) |> dev
-# ps = Flux.params(customres[2:end])
 
 transformer_base = ViT(:base, pretrain=false, imsize=(in_width, in_height))
 transformer = Chain(
@@ -180,13 +174,15 @@ function get_preprocessed_data(fns)
 end
 
 batch_size = 10
-# X, Y = get_preprocessed_data(fns_train_balanced)
-# FileIO.save("preprocessed.jld2", "X", X, "Y", Y)
-data = FileIO.load("preprocessed.jld2")
-X = data["X"]
-Y = data["Y"]
+if save_preprocessed
+    X, Y = get_preprocessed_data(fns_train_balanced)
+    FileIO.save("preprocessed.jld2", "X", X, "Y", Y)
+else
+    data = FileIO.load("preprocessed.jld2")
+    X = data["X"]
+    Y = data["Y"]
+end
 
-# loader = DataLoader(ImageDataSource(fns_train_balanced), batch_size)
 loader = DataLoader((X, Y), batch_size)
 
 # Use batch for validation error
@@ -203,11 +199,6 @@ function train(epochs)
         for (x, y) in iter
             x = x |> dev
             y = y |> dev
-            # println("Loaded a batch with $(size(x)) dims.")
-            # @show y
-            # yhat = customres(x) |> dev
-            # @show yhat
-            # train!(loss, customres, [(x, y)], opt)
 
             grads = Flux.gradient(model) do m
                 yhat = m(x)
@@ -226,8 +217,4 @@ function train(epochs)
     @show testloss = Flux.logitcrossentropy(model(x_test), y_test)
     jldsave("model-$(now()).jld2", model_state = Flux.state(model), loss = testloss)
 end
-train(20)
-
-# using BSON
-# BSON.@save "mymodel.bson" model
-# BSON.@load "mymodel.bson" model
+train(5)
